@@ -333,57 +333,80 @@ mod replay_tests {
     #[test]
     fn the_replay_circle_stays_in_the_band_between_the_written_radii() {
         let mut worst = 0f64;
-        for k in 0..400 {
+        for k in 0..1200 {
+            // Every plane, flat arcs and helixes.
+            let plane = [Plane::Xy, Plane::Xz, Plane::Yz][k % 3];
+            let helix = k % 2 == 1;
+            let [u, v, a] = plane.axes();
             let a0 = 0.37 * k as f64;
-            let sweep = [0.05, 0.3, 1.2, 2.8, 3.1][k % 5] * if k % 2 == 0 { 1. } else { -1. };
+            let sweep = [0.05, 0.3, 1.2, 2.8, 3.1][k % 5] * if k % 4 < 2 { 1. } else { -1. };
             let r = [0.8, 6., 60., 400.][k % 4];
             let gap = [0.0003, 0.001, 0.005][k % 3] * if k % 7 < 3 { 1. } else { -1. };
-            let center = [12.5, -7.25, 3.];
-            let start = [center[0] + r * a0.cos(), center[1] + r * a0.sin(), 3.];
+            let mut center = [0.; 3];
+            (center[u], center[v], center[a]) = (12.5, -7.25, 3.);
+            let mut start = center;
+            start[u] += r * a0.cos();
+            start[v] += r * a0.sin();
             let a1 = a0 + sweep;
-            let end = [
-                center[0] + (r + gap) * a1.cos(),
-                center[1] + (r + gap) * a1.sin(),
-                3.,
-            ];
-            let written = Curve::Arc {
-                start,
-                end,
-                center,
-                plane: Plane::Xy,
-                sweep_rad: sweep,
+            let mut end = center;
+            end[u] += (r + gap) * a1.cos();
+            end[v] += (r + gap) * a1.sin();
+            if helix {
+                end[a] -= 1.5;
+            }
+            let written = if helix {
+                Curve::Helix {
+                    start,
+                    end,
+                    center,
+                    plane,
+                    sweep_rad: sweep,
+                }
+            } else {
+                Curve::Arc {
+                    start,
+                    end,
+                    center,
+                    plane,
+                    sweep_rad: sweep,
+                }
             };
-            let Curve::Arc {
+            let replay = replay_curve(&written).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&replay),
+                std::mem::discriminant(&written)
+            );
+            let (Curve::Arc {
                 start: s,
                 end: e,
                 center: c,
+                plane: p,
                 sweep_rad: w,
-                ..
-            } = replay_curve(&written).unwrap()
+            }
+            | Curve::Helix {
+                start: s,
+                end: e,
+                center: c,
+                plane: p,
+                sweep_rad: w,
+            }) = replay
             else {
                 panic!()
             };
-            assert_eq!((s, e), (start, end));
+            assert_eq!((s, e, p), (start, end, plane));
             assert!(
                 (w - sweep).abs() < 0.02 && w.signum() == sweep.signum(),
                 "{w} {sweep}"
             );
             // An exact circle: it prepares at the tightest tolerance.
-            let replay = Curve::Arc {
-                start: s,
-                end: e,
-                center: c,
-                plane: Plane::Xy,
-                sweep_rad: w,
-            };
             replay.prepare(1e-9).unwrap();
-            let radius = (s[0] - c[0]).hypot(s[1] - c[1]);
-            let from = (s[1] - c[1]).atan2(s[0] - c[0]);
+            let radius = (s[u] - c[u]).hypot(s[v] - c[v]);
+            let from = (s[v] - c[v]).atan2(s[u] - c[u]);
             let (low, high) = (r.min(r + gap), r.max(r + gap));
             for j in 0..=200 {
                 let angle = from + w * j as f64 / 200.;
-                let p = [c[0] + radius * angle.cos(), c[1] + radius * angle.sin()];
-                let d = (p[0] - center[0]).hypot(p[1] - center[1]);
+                let q = [c[u] + radius * angle.cos(), c[v] + radius * angle.sin()];
+                let d = (q[0] - center[u]).hypot(q[1] - center[v]);
                 worst = worst.max(low - d).max(d - high);
                 assert!(
                     d >= low - 1e-9 && d <= high + 1e-9,

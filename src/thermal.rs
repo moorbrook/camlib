@@ -1124,7 +1124,74 @@ impl ThermalCutPlan {
                 }
                 Ok(())
             };
-            if let Some(rules) = &lead_rules {
+            // Chain cutting, the beam still on from the last outline: this
+            // outline starts where a link reaches it, the shortest first.
+            // Its possible starts are its stroke ends and the middles of
+            // its straight strokes, less those on edges kept free of
+            // leads; one is taken when its leads and pierce point are clear
+            // as for any start and the link to its lead-in is no longer
+            // than declared, clear of every part and off the pieces
+            // already cut free. Otherwise the start is chosen as usual
+            // (and the outline pierced unless the link to it is clear).
+            let mut chain_start = false;
+            if pending_link && let Some(chain) = &op.chain {
+                use lead_placement::Start;
+                let from = [pos[0], pos[1]];
+                let n = strokes.len();
+                let lead_in_start = |r: &[Stroke]| {
+                    let (start, t) = (r[0].a, r[0].tangent(false));
+                    let normal = scrap(t);
+                    let center = add(start, normal, lin.radius_mm);
+                    add(add(center, t, -lin.radius_mm), normal, lin.length_mm)
+                };
+                let mut reachable: Vec<(f64, Vec<Stroke>)> = (0..n)
+                    .map(Start::End)
+                    .chain(
+                        (0..n)
+                            .filter(|&k| strokes[k].arc.is_none())
+                            .map(Start::Middle),
+                    )
+                    .filter(|start| {
+                        lead_rules
+                            .as_ref()
+                            .is_none_or(|rules| !rules.kept_off(start.point(&strokes)))
+                    })
+                    .map(|start| {
+                        let r = start.rotate(&strokes);
+                        let p = lead_in_start(&r);
+                        ((p[0] - from[0]).hypot(p[1] - from[1]), r)
+                    })
+                    .filter(|(length, _)| *length <= chain.max_link_mm)
+                    .collect();
+                reachable.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for (length, r) in reachable.into_iter().take(16) {
+                    let p = lead_in_start(&r);
+                    if clear_at(&r).is_ok()
+                        && op.avoid_cut_parts.as_ref().is_none_or(|avoid| {
+                            freed
+                                .blocked(freed.len(), from, p, avoid.clearance_mm, leaving)
+                                .is_none()
+                        })
+                        && (length <= guard
+                            || probe(
+                                &kerf_probe,
+                                line(at_z(from, z_check), at_z(p, z_check)),
+                                "chain link",
+                            )
+                            .is_ok())
+                    {
+                        if lead_rules.is_some() {
+                            leads_moved += usize::from(r[0].a != strokes[0].a);
+                        }
+                        strokes = r;
+                        chain_start = true;
+                        break;
+                    }
+                }
+            }
+            if chain_start {
+                // Settled above.
+            } else if let Some(rules) = &lead_rules {
                 // The first start, in the preferred order, that is off the
                 // kept-off edges and whose leads and pierce are clear; one
                 // that is only off them is taken to the checks below (a

@@ -1955,10 +1955,12 @@ cut = camlib.ThermalCut("plasma", torch, parts, feed_mm_min=2500, cut_height_mm=
   deep, whose outlines start within `max_link_mm` of each other form a
   chain: its holes are cut first, then its outlines, so every hole is still
   cut before its own outline and nested parts before the parts round them.
-  Which parts follow each other is `part_order`'s, and where an outline
-  starts is `lead_placement`'s: a row cut towards the side its leads are on
-  chains; one cut the other way sends each link across the part just cut,
-  and is pierced. A link is fed at the cut's feed with height control off,
+  Which parts follow each other is `part_order`'s. A chained outline starts
+  where a link reaches it: of its corners, stroke ends and edge middles
+  (less any edge `lead_placement` keeps free of leads), the one with the
+  shortest clear link whose leads are clear too; `leads_moved` counts it
+  when `lead_placement` is declared. Where none is reachable the outline
+  starts as it otherwise would and is pierced. A link is fed at the cut's feed with height control off,
   like a lead, and posted as an ordinary feed move with the torch on. Not
   planned together with `common_line`. The report counts the links
   (`chain_links`) and their length (`chain_length_mm`, not in

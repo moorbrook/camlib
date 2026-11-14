@@ -959,6 +959,38 @@ fn chain_cutting_joins_outlines_through_the_scrap_with_one_pierce() {
         assert!(top_at(&stock, [s[2] + 0.75, y]).1 <= 0.01, "{s:?}");
         assert!(top_at(&stock, [s[0] + 3., y]).0 >= 5.99, "{s:?}");
     }
+    // Round parts with holes, staggered: the kerf paths are arcs and the
+    // links leave them at an angle. Each link still stays its kerf's half
+    // width off every disc, measured from the disc centres.
+    let discs: Vec<[f64; 2]> = (0..5)
+        .map(|k| [24. + 34. * k as f64, if k % 2 == 0 { 40. } else { 58. }])
+        .collect();
+    let mut op = operation(serde_json::json!({"chain": {"max_link_mm": 60.}}));
+    op.parts = PlanarRegion {
+        components: discs
+            .iter()
+            .map(|c| Component {
+                outer: circle(*c, 12.),
+                holes: vec![circle(*c, 4.)],
+            })
+            .collect(),
+        ..row()
+    };
+    let (events, plan, _) = run(op).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let (pierces, links) = pierces_and_links(&events);
+    assert!(!links.is_empty() && pierces == 10 - links.len(), "{pierces} {links:?}");
+    assert_eq!(report["chain_links"].as_u64(), Some(links.len() as u64));
+    for (a, b) in &links {
+        for k in 0..=400 {
+            let t = k as f64 / 400.;
+            let p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+            assert!(
+                discs.iter().all(|c| (p[0] - c[0]).hypot(p[1] - c[1]) > 12. + 0.75),
+                "{p:?}"
+            );
+        }
+    }
     // A link longer than declared is not cut: the next outline is pierced.
     let (events, plan, _) = cut(serde_json::json!({"chain": {"max_link_mm": 5.}})).unwrap();
     let report = serde_json::to_value(plan.report()).unwrap();

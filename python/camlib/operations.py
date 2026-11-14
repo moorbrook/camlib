@@ -1947,7 +1947,8 @@ class ChainCutting:
     it is no longer than ``max_link_mm`` (no default) and its kerf is proven
     clear of every part; otherwise the next outline is pierced as usual.
     Holes are always pierced; the holes of the parts in a chain are cut
-    before its outlines. Not planned with ``common_line``. The report counts
+    before its outlines. A chained outline starts where the shortest clear
+    link reaches it (a corner, a stroke end or the middle of an edge). Not planned with ``common_line``. The report counts
     the links (``chain_links``, ``chain_length_mm``) and ``pierces`` drops by
     as many."""
 
