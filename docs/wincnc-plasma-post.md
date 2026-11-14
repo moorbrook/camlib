@@ -67,6 +67,15 @@ torch-on, so the program does not depend on the state it starts in, and `L36`
 before the end macro, so height control is left on. Without the declaration a
 height control command is refused, as before.
 
+`arc_radius_tolerance_mm` (default 0) declares the start/end radius mismatch
+arc words may have. WinCNC accepts arcs within its `arc_err` setting
+(`WINCNC.INI`; Users Guide 3.1r5, System Configuration: "allowable errors in
+arc specifications", default .01 unit of measure); declare at most that, and
+at most 0.005 mm. With it, arcs whose rounded words differ that little stay
+arcs (see [posts](posts.md): `arc_word_mismatch_mm`); at 0 only exactly
+consistent words are written and other arcs become checked lines, which at
+four decimals of an inch is most shallow arcs.
+
 Both comments state the premise to the operator; the decoder reads them as
 the work offset and the torch, and refuses a `G92` on such a machine.
 

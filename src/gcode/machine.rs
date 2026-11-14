@@ -40,6 +40,9 @@ pub struct Dialect {
     pub length_activation: String,
     pub radius_tolerance_mm: f64,
     pub radius_relative_tolerance: f64,
+    /// The radius mismatch the post may write (post_rounding::RadiusTolerance).
+    #[serde(default)]
+    pub arc_word_mismatch_mm: f64,
     pub fixed_modes: Vec<String>,
     #[serde(deserialize_with = "present")]
     pub tap_pitch_word: Option<String>,
@@ -439,6 +442,14 @@ impl Dialect {
             || !(0. ..=0.005).contains(&self.radius_tolerance_mm)
         {
             return Err("invalid declared circle radius tolerance".into());
+        }
+        if !self.arc_word_mismatch_mm.is_finite()
+            || !(0. ..=self.radius_tolerance_mm).contains(&self.arc_word_mismatch_mm)
+        {
+            return Err(
+                "arc_word_mismatch_mm must be within 0..radius_tolerance_mm (what the controller accepts)"
+                    .into(),
+            );
         }
         if !self.radius_relative_tolerance.is_finite()
             || !(0. ..=0.001).contains(&self.radius_relative_tolerance)

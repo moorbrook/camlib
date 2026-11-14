@@ -46,7 +46,7 @@ def job(tool=None, **cut):
     op = camlib.ThermalCut(
         "plasma",
         tool,
-        parts(),
+        values.pop("parts", None) or parts(),
         2500,
         values.pop("cut_height_mm", 1.5),
         **{'pierce_delay_s': 0, 'power_percent': 100, 'tool_number': 1, 'length_register': 1, **values},
@@ -455,6 +455,49 @@ class ThermalCutTest(unittest.TestCase):
                 lowering=camlib.LoweringOptions(native_arcs=True),
                 accept={"unchecked_machine"},
             )
+        # Arcs. A plate whose edges are shallow arcs of a large radius, at a
+        # position four decimals of an inch do not state exactly: with
+        # exactly consistent words required most of those arcs have none and
+        # are posted as checked lines. WinCNC takes arcs within its arc_err
+        # setting; declared, every arc stays an arc, and the program is
+        # still decoded and certified against the plan.
+        bowed = PlanarRegion(
+            "bowed",
+            (
+                Component(
+                    Boundary(
+                        (
+                            (33.337, 27.219, 0.04),
+                            (153.337, 27.219, 0.04),
+                            (153.337, 97.219, 0.04),
+                            (33.337, 97.219, 0.04),
+                        )
+                    )
+                ),
+            ),
+            0,
+        )
+        jb = job(tool, parts=bowed, **fixed)
+        jb = camlib.Job("plasma", "1", (replace(jb.setups[0], initial_position_mm=(0, 0, THICKNESS + 1.5)),))
+        exact, tolerant = (
+            jb.post_nc(
+                "sheet",
+                machine=machine,
+                post=w.WinCNCPlasmaPost,
+                decoder=w.WinCNCPlasmaDecoder,
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            ).text.splitlines()
+            for machine in (m3, replace(m3, arc_radius_tolerance_mm=0.005, dialect=w._dialect("M66", 0.005)))
+        )
+        count = lambda lines, codes: sum(line[:2] in codes for line in lines)  # noqa: E731
+        self.assertGreater(count(exact, ("G1",)), 20)
+        # The four edges and the leads' arcs; the only lines are the leads' own.
+        self.assertLessEqual(count(tolerant, ("G1",)), 2)
+        self.assertGreaterEqual(count(tolerant, ("G2", "G3")), 4)
+        self.assertLess(len(tolerant), len(exact))
+        with self.assertRaisesRegex(ValueError, "radius tolerance"):
+            w._dialect("M66", 0.05)
         with self.assertRaisesRegex(ValueError, "local_coordinates"):
             replace(m3, local_coordinates="machine")
         with self.assertRaisesRegex(ValueError, "distinct M macro codes"):

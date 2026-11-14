@@ -39,9 +39,14 @@ Premises (declared, not checked on the machine):
   word is written.
 - WinCNC arcs are XY only (no plane words); its velocity smoothing (G9)
   must keep the path within the machine tolerance.
-- Arcs need exactly consistent words: post with
-  lowering=LoweringOptions(native_arcs=True). At most half a turn per arc
-  (as WinCNC's Fusion post).
+- Arcs: post with lowering=LoweringOptions(native_arcs=True). At most half
+  a turn per arc (as WinCNC's Fusion post). WinCNC takes arcs whose start
+  and end radius differ by up to its arc_err setting (WINCNC.INI; Users
+  Guide 3.1r5, System Configuration: default .01 unit of measure); declare
+  arc_radius_tolerance_mm (at most that, and at most 0.005 mm) and arcs
+  whose rounded words differ that little stay arcs. Left at 0, only
+  exactly consistent words are written and other arcs become checked
+  lines.
 No controller connection; verify on the machine before cutting.
 """
 
@@ -63,7 +68,7 @@ def _torch_comment(machine):
     return f'(TORCH {machine.tools[0].tool.upper()})'
 
 
-def _dialect(end):
+def _dialect(end, arc_radius_tolerance_mm=0):
     commands = (
         GCodeDialect()
         .with_commands(
@@ -105,7 +110,9 @@ def _dialect(end):
         GCodeDialect(),
         commands=commands,
         parentheses_comments=True,
-        radius_tolerance_mm=0,
+        radius_tolerance_mm=arc_radius_tolerance_mm,
+        radius_relative_tolerance=0,
+        arc_word_mismatch_mm=arc_radius_tolerance_mm,
         fixed_modes=('center_incremental', 'feed_per_minute', 'rpm_mode', 'cycles_off', 'exact_stop'),
         beam_s_max=1,
     )
@@ -120,6 +127,11 @@ class WinCNCPlasmaMachine(Machine):
     local_coordinates: str = 'cancel'
     # Height control switched from the program with L36/L37.
     program_height_control: bool = False
+    # The start/end radius mismatch an arc's words may have: WinCNC takes
+    # arcs within its arc_err setting (WINCNC.INI, "allowable errors in arc
+    # specifications", default .01 unit of measure). 0: exactly consistent
+    # words only, and arcs that have none are posted as checked lines.
+    arc_radius_tolerance_mm: float = 0
     torch_on_code: str = 'M61'
     torch_off_code: str = 'M62'
     end_code: str = 'M66'
@@ -139,7 +151,7 @@ class WinCNCPlasmaMachine(Machine):
             raise ValueError('local_coordinates must be "cancel" (G92 is written) or "keep" (it is not)')
         if len(self.tools) != 1 or self.planes != ('xy',) or self.max_sweep_rad > math.pi:
             raise ValueError('WinCNC plasma: one torch, XY arcs of at most half a turn')
-        if self.dialect != _dialect(self.end_code) or self.flood or self.mist:
+        if self.dialect != _dialect(self.end_code, self.arc_radius_tolerance_mm) or self.flood or self.mist:
             raise ValueError('dialect differs from the WinCNC plasma subset')
 
 
@@ -153,6 +165,7 @@ def define_machine(
     end_code='M66',
     local_coordinates='cancel',
     program_height_control=False,
+    arc_radius_tolerance_mm=0,
     **settings,
 ):
     """``torch``: the torch's ToolSetting. The macro codes are those of your
@@ -160,11 +173,13 @@ def define_machine(
     table has no start macro. ``local_coordinates="keep"``: no G92 is
     written, so the program runs in the local coordinates the operator set
     at the sheet. ``program_height_control=True``: height control is
-    switched from the program with L36/L37 (plan with height_control=True)."""
+    switched from the program with L36/L37 (plan with height_control=True).
+    ``arc_radius_tolerance_mm``: the start/end radius mismatch arc words may
+    have, at most the table's arc_err (WINCNC.INI) and at most 0.005 mm."""
     return WinCNCPlasmaMachine(
         name,
         (torch,),
-        dialect=_dialect(end_code),
+        dialect=_dialect(end_code, arc_radius_tolerance_mm),
         flood=False,
         mist=False,
         planes=('xy',),
@@ -173,6 +188,7 @@ def define_machine(
         start_code=start_code,
         local_coordinates=local_coordinates,
         program_height_control=program_height_control,
+        arc_radius_tolerance_mm=arc_radius_tolerance_mm,
         torch_on_code=torch_on_code,
         torch_off_code=torch_off_code,
         end_code=end_code,
