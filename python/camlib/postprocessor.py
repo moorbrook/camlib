@@ -798,6 +798,8 @@ class Machine:
             data.pop('schedule_post_feeds')
         if data['dialect']['beam_mark'] is None:
             data['dialect'].pop('beam_mark')
+        if not data['dialect']['arc_word_mismatch_mm']:
+            data['dialect'].pop('arc_word_mismatch_mm')
         return data
 
     def schedule(self, program, *, adjust_feeds=True, cancel=None):

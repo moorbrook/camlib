@@ -691,10 +691,10 @@ mod tests {
     }
 
     /// Shallow arcs of a large radius at four decimals of an inch: few have
-    /// exactly consistent words within the budget, so a dialect that writes
-    /// only those gets most of them as checked lines, whatever its
-    /// controller accepts. Where the dialect declares the mismatch it may
-    /// write, every one has words whose mismatch the controller accepts, and both circles the words describe (through the
+    /// words whose radii are equal on the word grid, so a controller with no
+    /// documented radius tolerance gets most of them as checked lines.
+    /// Where the dialect declares the mismatch it may write, every one has
+    /// words whose mismatch the controller accepts, and both circles the words describe (through the
     /// start and through the end) stay within the output tolerance of the
     /// planned arc.
     #[test]
@@ -717,7 +717,7 @@ mod tests {
                 plane: Plane::Xy,
                 sweep_rad: sweep,
             };
-            for (i, tolerance) in [ABS_0_005, WRITES_0_005].into_iter().enumerate() {
+            for (i, tolerance) in [EXACT, WRITES_0_005].into_iter().enumerate() {
                 let Ok((end, offsets)) =
                     circular_words(&source, start, 25.4, 4, 1e-5, 0.01, tolerance, PI)
                 else {

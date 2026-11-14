@@ -41,7 +41,7 @@ pub struct Dialect {
     pub radius_tolerance_mm: f64,
     pub radius_relative_tolerance: f64,
     /// The radius mismatch the post may write (post_rounding::RadiusTolerance).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub arc_word_mismatch_mm: f64,
     pub fixed_modes: Vec<String>,
     #[serde(deserialize_with = "present")]
@@ -779,4 +779,8 @@ impl Machine {
             mist: self.mist,
         }
     }
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.
 }
