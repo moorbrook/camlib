@@ -831,6 +831,135 @@ def inside_polygon(p, vertices):
     return inside
 
 
+class ChainCuttingTest(unittest.TestCase):
+    """Chain cutting (#296 B2): one pierce for a row of parts, the links cut
+    through the scrap with the torch on."""
+
+    @staticmethod
+    def row():
+        squares = [(10 + 36 * k, 40, 36 + 36 * k, 66) for k in range(5)]
+        return squares, PlanarRegion(
+            "row",
+            tuple(
+                Component(
+                    Boundary.polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1))),
+                    (circle((x0 + 13, y0 + 13), 5),),
+                )
+                for x0, y0, x1, y1 in squares
+            ),
+            0,
+        )
+
+    def cut(self, **options):
+        squares, region = self.row()
+        beam, links, report = False, [], None
+        pierces = 0
+        with job(parts=region, **options).regenerate() as run:
+            for u in run:
+                update = u.update
+                if isinstance(update, VerificationUpdate):
+                    self.assertEqual(update.status, "clear", update)
+                if isinstance(update, OperationUpdate) and update.stage == "events":
+                    for event in update.events:
+                        if event["kind"] == "beam":
+                            beam = event["power_percent"] > 0
+                            pierces += beam
+                motion = getattr(update, "motion", None)
+                if motion is not None and motion["kind"] == "lead":
+                    self.assertTrue(beam, motion)
+                    a, b = motion["curve"]["start"], motion["curve"]["end"]
+                    if motion["curve"]["kind"] == "line" and math.dist(a[:2], b[:2]) > 5:
+                        links.append((a, b))
+                if isinstance(update, OperationUpdate) and update.stage == "end":
+                    report = update.report
+        return squares, pierces, links, report
+
+    def test_a_row_is_cut_on_one_pierce_and_every_link_is_clear(self):
+        _, pierces, links, plain = self.cut()
+        self.assertEqual((pierces, links, plain["pierces"]), (10, [], 10))
+        self.assertNotIn("chain_links", plain)
+        squares, pierces, links, report = self.cut(chain=camlib.ChainCutting(45))
+        self.assertEqual((pierces, len(links)), (6, 4))
+        self.assertEqual((report["pierces"], report["chain_links"]), (6, 4))
+        self.assertAlmostEqual(report["chain_length_mm"], sum(math.dist(a[:2], b[:2]) for a, b in links), places=9)
+        # Four pierce delays fewer, and the travel between the outlines gone.
+        self.assertAlmostEqual(plain["dwell_seconds"] - report["dwell_seconds"], 4 * 0.5, places=9)
+        self.assertLess(report["rapid_length_mm"], plain["rapid_length_mm"])
+        # The holes before the outlines, every part's hole before its outline.
+        self.assertTrue(all(hole is not None for _, hole in report["order"][:5]))
+        self.assertTrue(all(hole is None for _, hole in report["order"][5:]))
+        # Independently of the planner: every link's kerf (0.75 mm either
+        # side) stays off every part, and none is longer than declared.
+        for a, b in links:
+            self.assertLessEqual(math.dist(a[:2], b[:2]), 45)
+            for k in range(401):
+                x, y = (a[i] + k / 400 * (b[i] - a[i]) for i in range(2))
+                for x0, y0, x1, y1 in squares:
+                    off = math.hypot(max(x0 - x, x - x1, 0), max(y0 - y, y - y1, 0))
+                    self.assertGreater(off, 0.75, (a, b, x, y))
+
+    def test_a_link_that_is_too_long_or_not_declared_sensibly(self):
+        _, pierces, links, report = self.cut(chain=camlib.ChainCutting(5))
+        self.assertEqual((pierces, links, report["pierces"], report["chain_links"]), (10, [], 10, 0))
+        with self.assertRaisesRegex(Exception, "max_link_mm"):
+            self.cut(chain=camlib.ChainCutting(0))
+        with self.assertRaisesRegex(Exception, "chain is not planned together with common_line"):
+            self.cut(chain=camlib.ChainCutting(45), common_line=camlib.CommonLine(5))
+
+    def test_a_chain_posts_through_every_plasma_post_in_inches(self):
+        # The links are ordinary feed moves with the torch on: each post
+        # writes four torch-on codes fewer, and its program decodes back to
+        # the plan.
+        from dataclasses import replace
+
+        from test_drill_cycles import example
+
+        _, region = self.row()
+        tool = camlib.Torch("torch", kerf_width=1.5)
+        fixed, limits = BeamPostsInInchesTest.FIXED, BeamPostsInInchesTest.LIMITS
+        for module, post, decoder, machine, cut, on in (
+            (
+                "qtplasmac_post",
+                "QtPlasmaCPost",
+                "QtPlasmaCDecoder",
+                dict(planes=("xy",), max_sweep_rad=math.tau),
+                {},
+                "M3",
+            ),
+            (
+                "centroid_plasma_post",
+                "CentroidPlasmaPost",
+                "CentroidPlasmaDecoder",
+                dict(max_sweep_rad=math.tau),
+                dict(height_control=False),
+                "M61",
+            ),
+            ("wincnc_plasma_post", "WinCNCPlasmaPost", "WinCNCPlasmaDecoder", {}, dict(height_control=False), "M61"),
+        ):
+            m = example(module)
+            counts = []
+            for options in ({}, dict(chain=camlib.ChainCutting(45))):
+                j = job(tool, parts=region, **{**fixed, **cut, **options})
+                start = replace(j.setups[0], initial_position_mm=(0, 0, THICKNESS + 1.5))
+                j = camlib.Job("plasma", "1", (start,))
+                header = j.compile().setup("sheet").program_header()
+                setting = ToolSetting.for_tool(
+                    tool, number=1, length_register=1, position_after_mm=header.initial_position_mm
+                )
+                posted = j.post_nc(
+                    "sheet",
+                    machine=m.define_machine(
+                        "table", setting, output_units="inch", decimals=4, helices=False, **limits, **machine
+                    ),
+                    post=getattr(m, post),
+                    decoder=getattr(m, decoder),
+                    lowering=camlib.LoweringOptions(native_arcs=True),
+                    accept={"unchecked_machine"},
+                )
+                counts.append(sum(line.split()[0] == on for line in posted.text.splitlines() if line.split()))
+            self.assertEqual(counts, [10, 6], module)
+
+
 class StraightEdgedHolesTest(unittest.TestCase):
     """Holes with straight edges get their leads and pierce in the hole
     (issue #78): rectangles, a slot, polygons, small holes near the lead size
