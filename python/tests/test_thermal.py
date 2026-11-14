@@ -374,6 +374,91 @@ class ThermalCutTest(unittest.TestCase):
             accept={"unchecked_machine"},
         ).text.splitlines()
         self.assertEqual(nc2.count("M71"), 6)
+        # A table whose own programs carry no start macro and run in the
+        # operator's local coordinates (ShopSabre with ProNest's post: G90,
+        # the cuts between M61 and M62, M66): neither M65 nor G92 is written,
+        # a comment states each premise instead, and the program still
+        # decodes back to the plan.
+        m3 = w.define_machine(
+            "table",
+            ToolSetting.for_tool(tool, number=1, length_register=1, position_after_mm=header.initial_position_mm),
+            start_code=None,
+            local_coordinates="keep",
+            output_units='inch',
+            decimals=4,
+            max_feed_mm_min=10000,
+            max_spindle_rpm=30000,
+            arcs=True,
+            helices=False,
+            max_tool_number=1,
+            max_length_register=1,
+            tool_changes=True,
+            rapid_mm_min=6000,
+        )
+        nc3 = j.post_nc(
+            "sheet",
+            machine=m3,
+            post=w.WinCNCPlasmaPost,
+            decoder=w.WinCNCPlasmaDecoder,
+            lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
+        ).text.splitlines()
+        self.assertEqual(nc3[:6], ["G90", "G20", "G40", "G49", "(WORK ZERO AS SET AT THE MACHINE)", "(TORCH TORCH)"])
+        self.assertTrue(nc3[6].startswith("G0 X"), nc3[6])
+        self.assertNotIn("G92", nc3)
+        self.assertNotIn("M65", nc3)
+        self.assertEqual((nc3.count("M61"), nc3.count("M62"), nc3[-1]), (6, 6, "M66"))
+        # Every other line is the same program as with the macro and G92.
+        m4 = replace(m3, start_code="M65", local_coordinates="cancel")
+        nc4 = j.post_nc(
+            "sheet",
+            machine=m4,
+            post=w.WinCNCPlasmaPost,
+            decoder=w.WinCNCPlasmaDecoder,
+            lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
+        ).text.splitlines()
+        self.assertEqual([line for line in nc4 if line not in ("G92", "M65")], [line for line in nc3 if line[0] != "("])
+        # Height control from the program (WinCNC's L36 on, L37 off): off
+        # before the first torch-on, on over each loop's cut and off again
+        # before its lead-out (never on in the small hole), and left on at
+        # the end. Without the declaration the command is refused.
+        jh = job(tool, **{**fixed, "height_control": True})
+        jh = camlib.Job("plasma", "1", (replace(jh.setups[0], initial_position_mm=(0, 0, THICKNESS + 1.5)),))
+        nch = jh.post_nc(
+            "sheet",
+            machine=replace(m3, program_height_control=True),
+            post=w.WinCNCPlasmaPost,
+            decoder=w.WinCNCPlasmaDecoder,
+            lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
+        ).text.splitlines()
+        self.assertEqual(nch[nch.index("M61") - 1], "L37")
+        self.assertEqual((nch.count("L36"), nch.count("L37")), (5 + 1, 5 + 1))
+        self.assertEqual(nch[-3:], ["M62", "L36", "M66"])
+        state, torch = None, False
+        for line in nch:
+            if line in ("M61", "M62"):
+                # Never on when the torch fires or goes out.
+                self.assertIs(state, False, line)
+                torch = line == "M61"
+            elif line in ("L36", "L37"):
+                state = line == "L36"
+                self.assertTrue(torch or line == "L37" or nch[-2] == line)
+        self.assertEqual([line for line in nch if line not in ("L36", "L37")], nc3)
+        with self.assertRaisesRegex(Exception, "program_height_control=True"):
+            jh.post_nc(
+                "sheet",
+                machine=m3,
+                post=w.WinCNCPlasmaPost,
+                decoder=w.WinCNCPlasmaDecoder,
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            )
+        with self.assertRaisesRegex(ValueError, "local_coordinates"):
+            replace(m3, local_coordinates="machine")
+        with self.assertRaisesRegex(ValueError, "distinct M macro codes"):
+            replace(m3, torch_off_code="M61")
 
     def test_micro_joints(self):
         report = None
