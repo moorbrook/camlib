@@ -498,6 +498,39 @@ class ThermalCutTest(unittest.TestCase):
         self.assertLess(len(tolerant), len(exact))
         with self.assertRaisesRegex(ValueError, "radius tolerance"):
             w._dialect("M66", 0.05)
+        # The feed from the control's material setup: declared, no F word is
+        # written, the program still decodes to the plan (the decoder cuts at
+        # the declared feed), and it is the F-word program less its F words.
+        # A cut planned at another feed anywhere (here the small hole's 60 %)
+        # is refused: the program could not say it.
+        material = replace(m3, material_feed_mm_min=2500)
+        js = job(tool, **{**fixed, "small_holes": None})
+        js = camlib.Job("plasma", "1", (replace(js.setups[0], initial_position_mm=(0, 0, THICKNESS + 1.5)),))
+        with_f, without_f = (
+            js.post_nc(
+                "sheet",
+                machine=machine,
+                post=w.WinCNCPlasmaPost,
+                decoder=w.WinCNCPlasmaDecoder,
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            ).text.splitlines()
+            for machine in (m3, material)
+        )
+        self.assertTrue(any(" F" in line for line in with_f))
+        self.assertFalse(any("F" in line for line in without_f if line[0] != "("), without_f[:12])
+        self.assertEqual([" ".join(word for word in line.split(" ") if word[0] != "F") for line in with_f], without_f)
+        with self.assertRaisesRegex(Exception, "planned at 1500 mm/min.*material_feed_mm_min"):
+            j.post_nc(
+                "sheet",
+                machine=material,
+                post=w.WinCNCPlasmaPost,
+                decoder=w.WinCNCPlasmaDecoder,
+                lowering=camlib.LoweringOptions(native_arcs=True),
+                accept={"unchecked_machine"},
+            )
+        with self.assertRaisesRegex(ValueError, "material_feed_mm_min"):
+            replace(m3, material_feed_mm_min=0)
         with self.assertRaisesRegex(ValueError, "local_coordinates"):
             replace(m3, local_coordinates="machine")
         with self.assertRaisesRegex(ValueError, "distinct M macro codes"):

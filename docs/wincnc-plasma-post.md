@@ -76,6 +76,15 @@ arcs (see [posts](posts.md): `arc_word_mismatch_mm`); at 0 only exactly
 consistent words are written and other arcs become checked lines, which at
 four decimals of an inch is most shallow arcs.
 
+`material_feed_mm_min` declares the "Feed Rate" of the material setup chosen at
+the control (Users Guide, Plasma Torch Height Control: "XY axes feed rate for
+this material"). A program with no `F` word cuts at that feed, which is how
+ProNest's programs for these tables are written. With it declared no `F` word
+is written, the decoder cuts at the declared feed, and a cut planned at any
+other feed (a `small_holes` or corner feed) is refused, naming the feed: the
+program could not say it. Left undeclared, every cutting move carries its `F`
+word, which overrides the material's feed.
+
 Both comments state the premise to the operator; the decoder reads them as
 the work offset and the torch, and refuses a `G92` on such a machine.
 
