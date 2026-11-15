@@ -2568,7 +2568,7 @@ impl ThermalCutPlan {
             let upper = stock.cells()[j * nx + i].upper_mm;
             if upper > spec.min_mm[2] {
                 return Err(format!(
-                    "thermal cut {}: the start at ({:.3}, {:.3}) is planned over a kerf cut earlier, but the sheet as it stands is not cut through there (it stands to Z{upper:.3}); this is a planner defect: report it",
+                    "thermal cut {}: the edge start at ({:.3}, {:.3}) is not proven open: the stock is not cut through there (its upper bound is Z{upper:.3}); use a positive run_on_mm to start outside the sheet, or refine the stock grid to prove an earlier kerf open",
                     self.id, p[0], p[1]
                 ));
             }
