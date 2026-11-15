@@ -697,6 +697,124 @@ class ThermalCutTest(unittest.TestCase):
         self.assertEqual({w for line in moves for w in line.split() if w[0] == "Z"}, {"Z7"})
 
 
+def wincnc_edge_start_job(units="mm", material_feed=False, from_kerfs=False, delay_s=0.125):
+    from dataclasses import replace
+    from test_drill_cycles import example
+
+    w = example("wincnc_plasma_post")
+    region = PlanarRegion(
+        "mixed_starts",
+        tuple(Component(Boundary.polygon(((80, y), (106, y), (106, y + 26), (80, y + 26)))) for y in (12, 48)),
+        0,
+    )
+    j = job(
+        parts=region,
+        edge_starts=camlib.EdgeStarts(run_on_mm=3, max_lead_mm=20, from_kerfs=from_kerfs, delay_s=delay_s),
+        height_mode="fixed",
+        pierce_height_mm=None,
+        travel_height_mm=None,
+        plunge_mm_min=None,
+        pierce_delay_s=0,
+        height_control=True,
+        small_holes=None,
+    )
+    j = replace(j, setups=(replace(j.setups[0], initial_position_mm=(0, 0, 7.5)),))
+    machine = w.define_machine(
+        "synthetic edge-start table",
+        table(j)[0],
+        output_units=units,
+        decimals=4 if units == "inch" else 3,
+        max_feed_mm_min=10000,
+        max_spindle_rpm=1,
+        arcs=True,
+        helices=False,
+        max_tool_number=1,
+        max_length_register=1,
+        tool_changes=True,
+        rapid_mm_min=6000,
+        start_code=None,
+        local_coordinates="keep",
+        program_height_control=True,
+        edge_start_cut_z_mm=7.5,
+        material_feed_mm_min=2500 if material_feed else None,
+    )
+    return w, j, machine
+
+
+class WinCNCEdgeStartsTest(unittest.TestCase):
+    setup_edge_job = staticmethod(wincnc_edge_start_job)
+
+    def post(self, w, j, machine, post=None):
+        return j.post_nc(
+            "sheet",
+            machine=machine,
+            post=post or w.WinCNCPlasmaPost,
+            decoder=w.WinCNCPlasmaDecoder,
+            lowering=camlib.LoweringOptions(native_arcs=True),
+            accept={"unchecked_machine"},
+        )
+
+    def test_mixed_pierces_and_edge_starts_round_trip_in_both_units(self):
+        for units in ("mm", "inch"):
+            for material_feed in (False, True):
+                with self.subTest(units=units, material_feed=material_feed):
+                    w, j, m = self.setup_edge_job(units, material_feed)
+                    lines = self.post(w, j, m).text.splitlines()
+                    self.assertEqual(lines.count('~L38'), 1)
+                    self.assertEqual(lines.count('M61'), 1)
+                    self.assertEqual(lines.count('M62'), 2)
+                    start = lines.index('~L38')
+                    self.assertEqual(lines[start - 2 : start], ['L37', 'L90 G0 Z{THR}'])
+                    self.assertEqual(lines.count('G4 D0.125'), 1)
+                    self.assertEqual(lines.count('F{THF}'), int(material_feed))
+                    self.assertNotIn('M63', lines)
+                    self.assertFalse(any('THS' in line or 'THP' in line or 'THZ' in line for line in lines))
+                    self.assertNotIn('G92', lines)
+
+    def test_decoder_rejects_missing_or_substituted_edge_start_steps(self):
+        w, j, m = self.setup_edge_job(material_feed=True)
+        mutations = (
+            ('L90 G0 Z{THR}', None, 'cut-height positioning'),
+            ('~L38', 'M61', 'native ~L38'),
+            ('F{THF}', None, 'material feed'),
+            ('L90 G0 Z{THR}', 'L36', 'cut-height positioning'),
+            ('L37', 'L36', 'disable THC'),
+            ('G4 D0.125', 'G4 D0.25', 'decoded effects differ from source'),
+        )
+        for before, after, message in mutations:
+            with self.subTest(before=before, after=after):
+
+                class BrokenPost(w.WinCNCPlasmaPost):
+                    def emit(self, *words):
+                        if words == (before,):
+                            if after is not None:
+                                super().emit(after)
+                        else:
+                            super().emit(*words)
+
+                with self.assertRaisesRegex((ValueError, SimulationError), message):
+                    self.post(w, j, m, BrokenPost)
+
+    def test_starts_in_earlier_kerfs_and_zero_delay(self):
+        w, j, m = self.setup_edge_job(from_kerfs=True, delay_s=0)
+        lines = self.post(w, j, m).text.splitlines()
+        self.assertEqual(lines.count('~L38'), 2)
+        self.assertNotIn('M61', lines)
+        self.assertEqual(lines.count('M62'), 2)
+        self.assertFalse(any(line.startswith('G4 ') for line in lines))
+
+    def test_edge_start_requires_declared_matching_height_and_thc_control(self):
+        from dataclasses import replace
+
+        w, j, m = self.setup_edge_job()
+        with self.assertRaisesRegex(ValueError, 'program_height_control'):
+            replace(m, program_height_control=False)
+        with self.assertRaisesRegex((ValueError, SimulationError), 'planned Z differs'):
+            self.post(w, j, replace(m, edge_start_cut_z_mm=8))
+        with self.assertRaisesRegex((ValueError, SimulationError), 'no start in open material'):
+            self.post(w, j, replace(m, edge_start_cut_z_mm=None))
+
+
 class BeamPostsInInchesTest(unittest.TestCase):
     """Every beam post on a controller that runs in inches: the same cuts are
     posted in inches (G20) at four decimals and certified against the plan

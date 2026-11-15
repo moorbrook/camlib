@@ -2127,11 +2127,13 @@ References: Hypertherm, *Thick metal cutting techniques*, white paper
 807850 (torch at cut height off the plate edge, motion delay, then entry);
 US patent 10,195,682 (starts over previously cut paths).
 
-**The supplied posts currently refuse `BeamStart`.** A controller post must
-have documented behavior for firing at the current height without touch-off
-or a pierce cycle, independently decode it, and preserve the distinction
-from a normal pierce. A generic torch-on command does not establish this.
-Issue #306 remains open for controller support and the separate scribe work.
+The [WinCNC plasma post](wincnc-plasma-post.md) supports `BeamStart` when
+the machine declares `edge_start_cut_z_mm` and program-controlled THC.
+It uses WinCNC's published cut-height and native torch-on primitives,
+independently decodes the sequence, and keeps ordinary pierces distinct.
+Other supplied posts refuse an edge start unless they implement and check
+a documented controller sequence. Issue #306 also tracks the separate
+scribe work.
 
 ## Plasma and laser marking: `ThermalMark`
 
