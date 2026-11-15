@@ -2106,7 +2106,7 @@ gap = cut.common_line_spacing_mm()   # place the parts this far apart
 
 ### Edge starts (experimental; controller support pending)
 
-`ThermalCut(edge_starts=camlib.EdgeStarts(run_on_mm, max_lead_mm,
+`ThermalCut(edge_starts=camlib.EdgeStarts(run_on_mm, max_lead_mm=...,
 from_kerfs=False, delay_s=0))` opts into starting loops in open material.
 The planner extends a straight lead to beyond the stock box by `run_on_mm`,
 or, with `from_kerfs=True`, to an earlier straight kerf in this operation.
