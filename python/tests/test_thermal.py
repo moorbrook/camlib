@@ -803,6 +803,36 @@ class WinCNCEdgeStartsTest(unittest.TestCase):
         self.assertEqual(lines.count('M62'), 2)
         self.assertFalse(any(line.startswith('G4 ') for line in lines))
 
+    def test_edge_start_after_a_pierce_and_at_the_initial_position(self):
+        from dataclasses import replace
+
+        w, j, m = self.setup_edge_job()
+
+        def at(position):
+            moved_job = replace(j, setups=(replace(j.setups[0], initial_position_mm=position),))
+            moved_machine = replace(m, tools=(replace(m.tools[0], position_after_mm=position),))
+            return self.post(w, moved_job, moved_machine).text.splitlines()
+
+        # Starting near the upper square makes the ordinary pierce occur
+        # first. Its shutdown must not prevent the following native start.
+        lines = at((100, 100, 7.5))
+        self.assertLess(lines.index('M61'), lines.index('~L38'))
+
+        # Determine the planned start from streamed motion, independently
+        # of the post, then begin there: no XY positioning move is needed.
+        position = (0, 0, 7.5)
+        with j.regenerate() as run:
+            for item in run:
+                update = item.update
+                if isinstance(update, OperationUpdate):
+                    if any(e['kind'] == 'beam_start' for e in update.events):
+                        break
+                elif not isinstance(update, VerificationUpdate):
+                    position = tuple(update.motion['curve']['end'])
+        lines = at(position)
+        first_xy = next(i for i, line in enumerate(lines) if line.startswith(('G0 ', 'G1 ', 'G2 ', 'G3 ')))
+        self.assertLess(lines.index('~L38'), first_xy)
+
     def test_edge_start_requires_declared_matching_height_and_thc_control(self):
         from dataclasses import replace
 
