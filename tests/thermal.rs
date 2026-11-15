@@ -105,12 +105,15 @@ fn operation(extra: serde_json::Value) -> ThermalCutOperation {
 }
 
 fn run(op: ThermalCutOperation) -> Result<(Vec<Event>, ThermalCutPlan, Stock), String> {
+    run_from(op, [0., 0., 40.])
+}
+
+fn run_from(op: ThermalCutOperation, initial: [f64; 3]) -> Result<(Vec<Event>, ThermalCutPlan, Stock), String> {
     let cancel = AtomicBool::new(false);
     let tool = torch();
     let prepared = tool.prepare().unwrap();
     let mut stock = Stock::new(spec()).unwrap();
     stock.enable_contact_queries(&cancel).unwrap();
-    let initial = [0., 0., 40.];
     let mut plan = ThermalCutPlan::prepare(op, &tool, &spec(), initial, 1, &cancel)?;
     let mut events = plan.prefix_events();
     events.extend(plan.take_events());
@@ -140,21 +143,7 @@ fn run(op: ThermalCutOperation) -> Result<(Vec<Event>, ThermalCutPlan, Stock), S
         events: events.clone(),
     };
     let mut v = ProgramValidator::new(&program, None).unwrap();
-    if let Err(e) = v.consume(&events) {
-        for (i, ev) in events.iter().enumerate().skip(30).take(14) {
-            if let Event::Motion { motion } = ev {
-                eprintln!(
-                    "{i} {:?} {:?} -> {:?}",
-                    motion.kind,
-                    motion.curve.start(),
-                    motion.curve.end()
-                );
-            } else {
-                eprintln!("{i} {ev:?}");
-            }
-        }
-        panic!("{e}");
-    }
+    v.consume(&events).unwrap();
     Ok((events, plan, stock))
 }
 
@@ -1187,7 +1176,7 @@ fn the_skeleton_is_cut_up_after_the_parts_clear_of_them_and_never_over_a_hole() 
 fn edge_starts_begin_loops_in_open_material_without_a_pierce() {
     // A square near the sheet's bottom edge and one above it (the sheet is
     // 200 x 120): each has a hole.
-    let squares = [[10., 12., 36., 38.], [10., 48., 36., 74.]];
+    let squares = [[80., 12., 106., 38.], [80., 48., 106., 74.]];
     let parts = || PlanarRegion {
         components: squares
             .iter()
@@ -1285,4 +1274,72 @@ fn edge_starts_begin_loops_in_open_material_without_a_pierce() {
         .err()
         .unwrap();
     assert!(error.contains("edge_starts"), "{error}");
+}
+
+#[test]
+fn edge_start_already_at_the_initial_position_precedes_the_first_cut() {
+    let mut op = operation(serde_json::json!({
+        "height_mode": "fixed", "pierce_height_mm": null,
+        "travel_height_mm": null, "plunge_mm_min": null,
+        "edge_starts": {"run_on_mm": 3., "max_lead_mm": 20., "delay_s": 0.2}
+    }));
+    op.parts = PlanarRegion {
+        components: vec![Component { outer: rect(10., 12., 36., 38.), holes: vec![] }],
+        ..row()
+    };
+    let (events, _, _) = run(op.clone()).unwrap();
+    let mut at = [0.; 3];
+    for e in events {
+        match e {
+            Event::Motion { motion } => at = motion.curve.end(),
+            Event::BeamStart { .. } => break,
+            _ => {}
+        }
+    }
+    assert!(at[0] < 0. || at[1] < 0.);
+    let (events, plan, _) = run_from(op, at).unwrap();
+    assert_eq!(plan.report().dwell_seconds, 0.2);
+    let start = events.iter().position(|e| matches!(e, Event::BeamStart { .. })).unwrap();
+    let first = events.iter().position(|e| matches!(e, Event::Motion { .. })).unwrap();
+    assert!(start < first);
+    assert!(matches!(&events[first], Event::Motion { motion } if motion.kind != MoveKind::Rapid));
+}
+
+#[test]
+fn edge_start_refuses_a_kerf_not_proven_open_by_stock() {
+    let mut op = operation(serde_json::json!({
+        "edge_starts": {"run_on_mm": 3., "max_lead_mm": 20., "from_kerfs": true}
+    }));
+    op.parts = PlanarRegion {
+        components: [rect(80., 12., 106., 38.), rect(80., 48., 106., 74.)]
+            .into_iter()
+            .map(|outer| Component { outer, holes: vec![] })
+            .collect(),
+        ..row()
+    };
+    // A 1.5 mm kerf cannot empty a 10 mm stock cell. The planned earlier
+    // path is not evidence that the authoritative stock is open there.
+    let spec = StockSpec { cell_size_mm: 10., ..spec() };
+    let cancel = AtomicBool::new(false);
+    let tool = torch();
+    let prepared = tool.prepare().unwrap();
+    let mut stock = Stock::new(spec.clone()).unwrap();
+    let mut plan = ThermalCutPlan::prepare(op, &tool, &spec, [0., 0., 40.], 1, &cancel).unwrap();
+    let mut starts = 0;
+    loop {
+        match plan.next_motion_with_stock(&stock, &cancel) {
+            Ok(Some(motion)) => {
+                let delta = stock.preview_sweep(&prepared, &motion, 1., SweepOptions::default(), &cancel).unwrap();
+                stock.apply_delta(&delta).unwrap();
+                starts += plan.take_events().iter().filter(|e| matches!(e, Event::BeamStart { .. })).count();
+            }
+            Ok(None) => panic!("an unproven kerf start was accepted"),
+            Err(error) => {
+                assert!(error.contains("not cut through"), "{error}");
+                assert_eq!(starts, 1, "only the off-sheet start may have been emitted");
+                assert!(!plan.take_events().iter().any(|e| matches!(e, Event::BeamStart { .. })));
+                break;
+            }
+        }
+    }
 }

@@ -2104,6 +2104,35 @@ gap = cut.common_line_spacing_mm()   # place the parts this far apart
   `start_mm`, `end_mm`, `shared_length_mm`); `pierces` counts them, `loops` and
   `order` the closed loops (a group's outline is listed under its first part).
 
+### Edge starts (experimental; controller support pending)
+
+`ThermalCut(edge_starts=camlib.EdgeStarts(run_on_mm, max_lead_mm,
+from_kerfs=False, delay_s=0))` opts into starting loops in open material.
+The planner extends a straight lead to beyond the stock box by `run_on_mm`,
+or, with `from_kerfs=True`, to an earlier straight kerf in this operation.
+It chooses the shortest candidate within `max_lead_mm` whose lead clears
+all kept parts. Loops without such a candidate use their ordinary pierce.
+This option does not make a thickness beyond the torch's piercing capacity
+safe to program: some loops can still need piercing.
+
+The beam starts at cut height with a distinct `BeamStart` event, followed
+by the declared `delay_s`, without a pierce-height move or pierce delay.
+The report counts `edge_starts` separately from `pierces`. Before releasing
+the start event, the planner checks that its position is outside the sheet
+or its stock cell is completely cut through. Possible remaining material
+is refused. Stock checks use conservative bounds, so a narrow kerf may
+require a finer stock grid to prove it open.
+
+References: Hypertherm, *Thick metal cutting techniques*, white paper
+807850 (torch at cut height off the plate edge, motion delay, then entry);
+US patent 10,195,682 (starts over previously cut paths).
+
+**The supplied posts currently refuse `BeamStart`.** A controller post must
+have documented behavior for firing at the current height without touch-off
+or a pierce cycle, independently decode it, and preserve the distinction
+from a normal pierce. A generic torch-on command does not establish this.
+Issue #306 remains open for controller support and the separate scribe work.
+
 ## Plasma and laser marking: `ThermalMark`
 
 Lines traced on the sheet surface with the beam in the machine's marking

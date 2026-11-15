@@ -2354,9 +2354,21 @@ impl ThermalCutPlan {
         }
         // Events before the first move are handed out before it.
         let mut events = vec![];
-        while let Some(Step::Event(_)) = steps.front() {
-            if let Some(Step::Event(e)) = steps.pop_front() {
-                events.push(e);
+        while let Some(Step::Event(_) | Step::Open(_)) = steps.front() {
+            match steps.pop_front() {
+                Some(Step::Event(e)) => events.push(e),
+                Some(Step::Open(p)) => {
+                    // No move has run yet, so there is no earlier kerf in this
+                    // operation. An initial edge start must be outside the box;
+                    // this proof also holds for mesh stock contained in it.
+                    if (0..2).all(|k| p[k] >= spec.min_mm[k] && p[k] <= spec.max_mm[k]) {
+                        return Err(format!(
+                            "thermal cut {}: an initial edge start must be outside the sheet",
+                            op.id
+                        ));
+                    }
+                }
+                _ => unreachable!(),
             }
         }
         // The order's rules, checked on the order as it will be cut, apart
@@ -2443,7 +2455,14 @@ impl ThermalCutPlan {
                 _ => 0.,
             })
             .sum();
-        let (mut feed_seconds, mut dwell_seconds) = (0., 0.);
+        let mut feed_seconds = 0.;
+        let mut dwell_seconds: f64 = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Dwell { seconds } => Some(*seconds),
+                _ => None,
+            })
+            .sum();
         for step in &steps {
             match step {
                 Step::Move(curve, kind, Some(feed)) if !kind.is_rapid() => {
@@ -2537,6 +2556,25 @@ impl ThermalCutPlan {
         self.report.geometric_residual_status = ResidualStatus::Estimated;
         Ok(())
     }
+    fn check_open(&self, p: [f64; 2], stock: &Stock) -> Result<(), String> {
+        // Off the sheet (the stock's box), or cut through.
+        let spec = stock.spec();
+        let inside = (0..2).all(|k| p[k] >= spec.min_mm[k] && p[k] <= spec.max_mm[k]);
+        if inside {
+            let [nx, ny] = stock.dimensions();
+            let [wx, wy] = stock.cell_widths_mm();
+            let i = (((p[0] - spec.min_mm[0]) / wx) as usize).min(nx - 1);
+            let j = (((p[1] - spec.min_mm[1]) / wy) as usize).min(ny - 1);
+            let upper = stock.cells()[j * nx + i].upper_mm;
+            if upper > spec.min_mm[2] {
+                return Err(format!(
+                    "thermal cut {}: the start at ({:.3}, {:.3}) is planned over a kerf cut earlier, but the sheet as it stands is not cut through there (it stands to Z{upper:.3}); this is a planner defect: report it",
+                    self.id, p[0], p[1]
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn next_motion_with_stock(
         &mut self,
         stock: &Stock,
@@ -2556,24 +2594,7 @@ impl ThermalCutPlan {
             match step {
                 Step::Event(e) => self.events.push(e),
                 Step::Done => self.report.loops_completed += 1,
-                Step::Open(p) => {
-                    // Off the sheet (the stock's box), or cut through.
-                    let spec = stock.spec();
-                    let inside = (0..2).all(|k| p[k] >= spec.min_mm[k] && p[k] <= spec.max_mm[k]);
-                    if inside {
-                        let [nx, ny] = stock.dimensions();
-                        let [wx, wy] = stock.cell_widths_mm();
-                        let i = (((p[0] - spec.min_mm[0]) / wx) as usize).min(nx - 1);
-                        let j = (((p[1] - spec.min_mm[1]) / wy) as usize).min(ny - 1);
-                        let upper = stock.cells()[j * nx + i].upper_mm;
-                        if upper > spec.min_mm[2] + self.tolerance {
-                            return Err(format!(
-                                "thermal cut {}: the start at ({:.3}, {:.3}) is planned over a kerf cut earlier, but the sheet as it stands is not cut through there (it stands to Z{upper:.3}); this is a planner defect: report it",
-                                self.id, p[0], p[1]
-                            ));
-                        }
-                    }
-                }
+                Step::Open(p) => self.check_open(p, stock)?,
                 Step::Move(curve, kind, feed) => {
                     curve.prepare(self.tolerance)?;
                     let m = Motion {
@@ -2588,10 +2609,16 @@ impl ThermalCutPlan {
                     self.expected_generation = Some(stock.generation() + 1);
                     // Events due right after this move stay queued until the
                     // next call hands them out with take_events.
-                    while let Some(Step::Event(_) | Step::Done) = self.steps.front() {
+                    while let Some(Step::Event(_) | Step::Done | Step::Open(_)) = self.steps.front()
+                    {
                         match self.steps.pop_front() {
                             Some(Step::Event(e)) => self.events.push(e),
                             Some(Step::Done) => self.report.loops_completed += 1,
+                            // Checking the stock before this move is conservative:
+                            // a committed move can only remove material. In the
+                            // usual case this is the rapid to the start, which
+                            // removes nothing. Check before exposing BeamStart.
+                            Some(Step::Open(p)) => self.check_open(p, stock)?,
                             _ => unreachable!(),
                         }
                     }

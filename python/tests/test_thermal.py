@@ -10,7 +10,7 @@ import camlib
 from camlib.planar import Boundary, Component, PlanarRegion
 from camlib.post import GCodeDialect, Machine, ToolSetting, post_events
 from camlib.posted import OperationEvents
-from camlib.simulation import OperationUpdate, Simulation, VerificationUpdate
+from camlib.simulation import OperationUpdate, Simulation, SimulationError, VerificationUpdate
 
 THICKNESS = 6
 
@@ -71,6 +71,76 @@ def table(j):
 
 
 class ThermalCutTest(unittest.TestCase):
+    def test_edge_start_events_precede_leads_and_unsupported_posts_refuse(self):
+        from dataclasses import replace
+        from test_drill_cycles import example
+
+        region = PlanarRegion("edge_part", (Component(Boundary.polygon(((10, 12), (36, 12), (36, 38), (10, 38)))),), 0)
+        options = camlib.EdgeStarts(run_on_mm=3, max_lead_mm=20)
+        j = job(
+            parts=region,
+            edge_starts=options,
+            height_mode="fixed",
+            pierce_height_mm=None,
+            travel_height_mm=None,
+            plunge_mm_min=None,
+            pierce_delay_s=0,
+            height_control=False,
+            small_holes=None,
+        )
+        j = replace(j, setups=(replace(j.setups[0], initial_position_mm=(0, 0, 7.5)),))
+        on, starts, report = False, [], None
+        position = (0, 0, 7.5)
+        with j.regenerate() as run:
+            for item in run:
+                update = item.update
+                if isinstance(update, OperationUpdate):
+                    for event in update.events:
+                        if event["kind"] == "beam_start":
+                            self.assertFalse(on)
+                            self.assertTrue(position[0] < 0 or position[1] < 0)
+                            self.assertEqual(position[2], 7.5)
+                            starts.append(position)
+                            on = True
+                        elif event["kind"] == "beam":
+                            self.assertEqual(event["power_percent"], 0)
+                            on = False
+                    if update.stage == "end":
+                        report = update.report
+                elif isinstance(update, VerificationUpdate):
+                    self.assertEqual(update.status, "clear")
+                else:
+                    motion = update.motion
+                    if motion["kind"] != "rapid":
+                        self.assertTrue(on, "BeamStart must reach consumers before the first lead")
+                    position = motion["curve"]["end"]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(report["edge_starts"], 1)
+        self.assertEqual(report["pierces"], 0)
+        w = example("wincnc_plasma_post")
+        machine = w.define_machine(
+            "table",
+            table(j)[0],
+            output_units="mm",
+            decimals=3,
+            max_feed_mm_min=10000,
+            max_spindle_rpm=1,
+            arcs=True,
+            helices=False,
+            max_tool_number=1,
+            max_length_register=1,
+            tool_changes=True,
+            rapid_mm_min=6000,
+        )
+        with self.assertRaisesRegex(SimulationError, "no start in open material"):
+            j.post_nc(
+                "sheet",
+                machine=machine,
+                post=w.WinCNCPlasmaPost,
+                decoder=w.WinCNCPlasmaDecoder,
+                lowering=camlib.LoweringOptions(native_arcs=True),
+            )
+
     def test_setup_limits_reach_thermal_planning(self):
         from dataclasses import replace
         from camlib.simulation import SimulationError

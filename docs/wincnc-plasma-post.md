@@ -99,3 +99,13 @@ post refuses a dwell, and a THC command unless the machine declares
 post with `LoweringOptions(native_arcs=True)`. WinCNC's velocity smoothing
 (G9) must keep the path within the machine tolerance. Verify on the machine
 before cutting.
+
+Edge starts (`BeamStart`) are currently refused. The supplied ShopSabre
+ProNest post, revision 1.15, emits `M61` in `OUTPUT CUT1 ON` without an
+edge-start branch. This establishes the normal start word, not the contents
+of its controller macro. The WinCNC Users Guide 3.1r5 documents disabling
+Piercing Height in the material settings (p. 56) and `L38` in the command
+reference, but these facts do not establish a sequence that switches safely
+between ordinary pierces and starts in open material within one program.
+No no-touch behavior is inferred from `M61`, and no replacement macro is
+assumed. See issue #306.
