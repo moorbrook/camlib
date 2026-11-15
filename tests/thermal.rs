@@ -1182,3 +1182,107 @@ fn the_skeleton_is_cut_up_after_the_parts_clear_of_them_and_never_over_a_hole() 
     .unwrap();
     assert!(error.contains("max_piece_mm"), "{error}");
 }
+
+#[test]
+fn edge_starts_begin_loops_in_open_material_without_a_pierce() {
+    // A square near the sheet's bottom edge and one above it (the sheet is
+    // 200 x 120): each has a hole.
+    let squares = [[10., 12., 36., 38.], [10., 48., 36., 74.]];
+    let parts = || PlanarRegion {
+        components: squares
+            .iter()
+            .map(|s| Component {
+                outer: rect(s[0], s[1], s[2], s[3]),
+                holes: vec![circle([0.5 * (s[0] + s[2]), 0.5 * (s[1] + s[3])], 5.)],
+            })
+            .collect(),
+        ..row()
+    };
+    let cut = |extra: serde_json::Value| {
+        let mut op = operation(extra);
+        op.parts = parts();
+        run(op)
+    };
+    // What fires the beam, where, and the straight beam-on moves before it.
+    let starts = |events: &[Event]| {
+        let (mut pierces, mut open) = (0, vec![]);
+        let mut at = [0.; 3];
+        let mut kerfs: Vec<([f64; 3], [f64; 3])> = vec![];
+        for e in events {
+            match e {
+                Event::Motion { motion } => {
+                    if motion.kind != MoveKind::Rapid
+                        && let Curve::Line { start, end } = motion.curve
+                    {
+                        kerfs.push((start, end));
+                    }
+                    at = motion.curve.end();
+                }
+                Event::Beam { power_percent } if *power_percent > 0. => pierces += 1,
+                Event::BeamStart { .. } => open.push((at, kerfs.clone())),
+                _ => {}
+            }
+        }
+        (pierces, open)
+    };
+    let (events, plan, _) = cut(serde_json::json!({})).unwrap();
+    let plain = serde_json::to_value(plan.report()).unwrap();
+    assert_eq!(starts(&events).0, 4);
+    assert!(plain.get("edge_starts").is_none());
+    // From the sheet's edge only: the lower square is 12 mm from the bottom
+    // edge, the upper one out of a 20 mm lead's reach of every edge.
+    let edge = serde_json::json!({"run_on_mm": 3., "max_lead_mm": 20.});
+    let (events, plan, _) = cut(serde_json::json!({"edge_starts": edge})).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let (pierces, open) = starts(&events);
+    assert_eq!((pierces, open.len()), (3, 1));
+    assert_eq!((report["pierces"].as_u64(), report["edge_starts"].as_u64()), (Some(3), Some(1)));
+    // Independently: the beam fires 3 mm beyond the sheet's edge, at the
+    // cut height, with no pierce delay; the dwells are one fewer.
+    let p = open[0].0;
+    let outside = (0. - p[0]).max(p[0] - 200.).max(0. - p[1]).max(p[1] - 120.);
+    assert!((outside - 3.).abs() < 1e-9, "{p:?}");
+    assert_eq!(p[2], 6. + 1.5);
+    assert!(
+        (plain["dwell_seconds"].as_f64().unwrap() - report["dwell_seconds"].as_f64().unwrap() - 0.5).abs() < 1e-9
+    );
+    // With starts over earlier kerfs too: the upper square starts on the
+    // kerf along the lower one's top edge, cut before it.
+    let both = serde_json::json!({"run_on_mm": 3., "max_lead_mm": 20., "from_kerfs": true, "delay_s": 0.2});
+    let (events, plan, stock) = cut(serde_json::json!({"edge_starts": both})).unwrap();
+    let report = serde_json::to_value(plan.report()).unwrap();
+    let (pierces, open) = starts(&events);
+    assert_eq!((pierces, open.len()), (2, 2));
+    assert_eq!(report["edge_starts"].as_u64(), Some(2));
+    let (p, kerfs) = &open[1];
+    assert!(p[0] > 0. && p[0] < 200. && p[1] > 38. && p[1] < 48., "{p:?}");
+    // On the centre line of a straight kerf cut before it (independently:
+    // the nearest earlier straight beam-on move passes through it).
+    let nearest = kerfs
+        .iter()
+        .map(|(a, b)| to_segment([p[0], p[1]], [a[0], a[1]], [b[0], b[1]]))
+        .fold(f64::INFINITY, f64::min);
+    assert!(nearest < 1e-9, "{nearest}");
+    // Each open start pauses for the declared motion delay.
+    assert!(
+        (report["dwell_seconds"].as_f64().unwrap() - (2. * 0.5 + 2. * 0.2)).abs() < 1e-9,
+        "{}",
+        report["dwell_seconds"]
+    );
+    // Both parts are still cut free and kept.
+    for s in &squares {
+        let y = 0.5 * (s[1] + s[3]);
+        assert!(top_at(&stock, [s[0] - 0.75, y]).1 <= 0.01);
+        assert!(top_at(&stock, [s[0] + 3., y]).0 >= 5.99);
+    }
+    // A lead longer than declared is not taken: everything is pierced.
+    let short = serde_json::json!({"run_on_mm": 3., "max_lead_mm": 5., "from_kerfs": true});
+    let (events, plan, _) = cut(serde_json::json!({"edge_starts": short})).unwrap();
+    assert_eq!(starts(&events), (4, vec![]));
+    assert_eq!(serde_json::to_value(plan.report()).unwrap()["edge_starts"].as_u64(), Some(0));
+    // Refusals name the problem.
+    let error = cut(serde_json::json!({"edge_starts": {"run_on_mm": 3., "max_lead_mm": 0.}}))
+        .err()
+        .unwrap();
+    assert!(error.contains("edge_starts"), "{error}");
+}
